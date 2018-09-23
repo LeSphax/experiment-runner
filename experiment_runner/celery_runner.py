@@ -7,7 +7,6 @@ from celery import Celery, signals, apps
 from celery.exceptions import WorkerTerminate
 from celery.platforms import EX_FAILURE
 from celery.signals import worker_shutdown, worker_shutting_down
-from celery.task.control import inspect
 
 app = Celery('tasks', broker='pyamqp://guest@localhost//')
 EXPERIMENTS_FOLDER = "./experiments/"
@@ -35,16 +34,18 @@ def worker_ready(*args, **kwargs):
 
 @app.task
 def schedule():
-    tasks = list(inspect().active().values())[0]
-    run_shell_file_tasks = [x for x in tasks if x['type'] == 'celery_runner.run_shell_file']
-    if len(run_shell_file_tasks) == 0:
-        for file in os.listdir(EXPERIMENTS_FOLDER):
-            if file.endswith("pending.sh") and len(run_shell_file_tasks) == 0:
-                split = file.split('.')
-                experiment_name = split[0]
-                print('Found an experiment, running ', experiment_name)
-                os.rename(EXPERIMENTS_FOLDER + file, EXPERIMENTS_FOLDER + experiment_name + ".running.sh")
-                run_shell_file.apply_async(args=[experiment_name], task_id=MAIN_TASK_ID)
+    running_experiments = [file for file in os.listdir(EXPERIMENTS_FOLDER) if file.endswith("running.sh")]
+    if len(running_experiments) == 0:
+        pending_experiments = [file for file in os.listdir(EXPERIMENTS_FOLDER) if file.endswith("pending.sh")]
+        pending_experiments = sorted(pending_experiments, key=lambda name: os.path.getmtime(os.path.join(EXPERIMENTS_FOLDER, name)))
+
+        if len(pending_experiments) > 0:
+            file = pending_experiments[0]
+            split = file.split('.')
+            experiment_name = split[0]
+            print('Found an experiment, running ', experiment_name)
+            os.rename(EXPERIMENTS_FOLDER + file, EXPERIMENTS_FOLDER + experiment_name + ".running.sh")
+            run_shell_file.apply_async(args=[experiment_name], task_id=MAIN_TASK_ID)
 
 
 @app.task
@@ -54,17 +55,23 @@ def run_shell_file(experiment_name):
     with open('./outputs/' + experiment_name + ".log", 'w') as output:
         process = subprocess.Popen([script_path], cwd='/home/sphax/Desktop/ML/Experiments/experiment-runner/repositories/ppo', stdout=output, stderr=output, preexec_fn=os.setsid)
 
+    stopped = False
+
     def signal_handler(sig, frame):
         print('Received SIGINT, killing process')
         os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        os.rename(script_path, EXPERIMENTS_FOLDER + experiment_name + ".stopped.sh")
+        nonlocal stopped
+        stopped = True
         print('Killed process')
 
     signal.signal(signal.SIGTERM, signal_handler)
     process.wait()
     if process.returncode == 0:
         os.rename(script_path, EXPERIMENTS_FOLDER + experiment_name + ".finished.sh")
-    else:
+    elif not stopped:
         os.rename(script_path, EXPERIMENTS_FOLDER + experiment_name + ".failed.sh")
+
 
 @worker_shutdown.connect
 def shutdown(**kwargs):

@@ -3,3 +3,5 @@ experiments/
 outputs/
 repositories/
 celerybeat-schedule
+
+*.egg-info

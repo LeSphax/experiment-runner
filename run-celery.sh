@@ -1,2 +1,2 @@
 #!/bin/bash
-celery -A celery_runner worker -B --loglevel=info
+celery -A experiment_runner.celery_runner worker -B --loglevel=info
